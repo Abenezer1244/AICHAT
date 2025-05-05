@@ -1,0 +1,118 @@
+/* App.css - Main application styles */
+
+/* Main layout */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Common form styles */
+.form-group {
+  margin-bottom: 1rem;
+}
+
+/* Loading spinner animations */
+.spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border-left-color: #6366f1;
+  animation: spin 1s linear infinite;
+}
+
+.spinner-small {
+  border: 2px solid rgba(0, 0, 0, 0.1);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border-left-color: #6366f1;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Auth pages */
+.login-page, .register-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background-color: #f3f4f6;
+}
+
+.sign-in-container, .register-container {
+  width: 100%;
+  max-width: 400px;
+  padding: 2rem;
+}
+
+.sign-in-form, .register-form {
+  background-color: white;
+  padding: 2rem;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.sign-in-form h2, .register-form h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin-bottom: 1.5rem;
+  text-align: center;
+}
+
+.sign-in, .register-button {
+  width: 100%;
+  padding: 0.5rem 1rem;
+  margin-top: 1rem;
+  background-color: #6366f1;
+  color: white;
+  border: none;
+  border-radius: 0.25rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.sign-in:hover, .register-button:hover {
+  background-color: #4f46e5;
+}
+
+.sign-in:disabled, .register-button:disabled {
+  background-color: #a5b4fc;
+  cursor: not-allowed;
+}
+
+.error-message {
+  background-color: #fee2e2;
+  color: #b91c1c;
+  padding: 0.75rem;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+/* Chat page styles */
+.chat-page {
+  height: calc(100vh - 64px); /* Adjust for navbar height */
+}
+
+/* Dashboard styles */
+.dashboard {
+  max-width: 1200px;
+  margin: 0 auto;
+}
