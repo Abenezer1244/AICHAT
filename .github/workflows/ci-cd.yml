@@ -1,0 +1,354 @@
+# .github/workflows/ci-cd.yml - GitHub Actions workflow for CI/CD
+
+name: Production Chatbot CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      mongodb:
+        image: mongo:latest
+        ports:
+          - 27017:27017
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          npm ci
+
+      - name: Lint backend
+        run: |
+          cd backend
+          npm run lint
+
+      - name: Test backend
+        run: |
+          cd backend
+          npm test
+        env:
+          NODE_ENV: test
+          MONGODB_URI: mongodb://localhost:27017/chatbot_test
+          JWT_SECRET: test_secret_key
+          REDIS_URL: redis://localhost:6379
+          
+      - name: Build backend
+        run: |
+          cd backend
+          npm run build
+
+      - name: Set up Node.js for frontend
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Lint frontend
+        run: |
+          cd frontend
+          npm run lint
+
+      - name: Test frontend
+        run: |
+          cd frontend
+          npm test
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm run build
+        env:
+          REACT_APP_API_URL: /api
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run OWASP ZAP Scan
+        uses: zaproxy/action-baseline@v0.7.0
+        with:
+          target: 'https://staging.your-chatbot-domain.com'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+
+      - name: Run Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'production-chatbot'
+          path: '.'
+          format: 'HTML'
+          out: 'reports'
+          args: >
+            --suppression .security/suppression.xml
+            --failOnCVSS 7
+            --enableRetired
+
+      - name: Upload Security Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: reports/
+
+  build-push:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [test, security-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v4
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-backend:latest
+            ${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-backend:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-backend:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-backend:buildcache,mode=max
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-frontend:latest
+            ${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-frontend:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-frontend:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKER_HUB_USERNAME }}/chatbot-frontend:buildcache,mode=max
+          build-args: |
+            REACT_APP_API_URL=/api
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: build-push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
+
+      - name: Deploy to production
+        run: |
+          # Create deployment script
+          cat > deploy.sh << 'EOL'
+          #!/bin/bash
+          set -e
+          
+          # Pull latest code
+          cd /opt/production-chatbot
+          git pull
+          
+          # Update .env file with secrets
+          cat > .env << 'EOF'
+          MONGO_USERNAME=${{ secrets.MONGO_USERNAME }}
+          MONGO_PASSWORD=${{ secrets.MONGO_PASSWORD }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          AI_API_KEY=${{ secrets.AI_API_KEY }}
+          AI_PROVIDER=${{ secrets.AI_PROVIDER }}
+          GRAFANA_USER=${{ secrets.GRAFANA_USER }}
+          GRAFANA_PASSWORD=${{ secrets.GRAFANA_PASSWORD }}
+          DOMAIN_NAME=${{ secrets.DOMAIN_NAME }}
+          ENV=production
+          EOF
+          
+          # Pull latest images
+          docker-compose pull
+          
+          # Restart services
+          docker-compose up -d
+          
+          # Check services health
+          ./deploy-check.sh
+          EOL
+          
+          # Create health check script
+          cat > deploy-check.sh << 'EOL'
+          #!/bin/bash
+          set -e
+          
+          # Wait for services to start
+          sleep 30
+          
+          # Check API health
+          if curl -s http://localhost/api/health | grep -q "ok"; then
+            echo "✅ API is healthy"
+          else
+            echo "❌ API failed health check"
+            exit 1
+          fi
+          
+          # Check frontend
+          if curl -s http://localhost/ > /dev/null; then
+            echo "✅ Frontend is healthy"
+          else
+            echo "❌ Frontend failed health check"
+            exit 1
+          fi
+          
+          echo "✅ Deployment successful!"
+          EOL
+          
+          # Copy deployment scripts to server
+          scp deploy.sh deploy-check.sh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/opt/production-chatbot/
+          
+          # Execute deployment
+          ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "chmod +x /opt/production-chatbot/deploy.sh /opt/production-chatbot/deploy-check.sh && /opt/production-chatbot/deploy.sh"
+
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [deploy]
+    if: always()
+    
+    steps:
+      - name: Notify Success
+        if: ${{ success() }}
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "text": "✅ Production Chatbot deployment successful!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "✅ *Production Chatbot deployment successful!*\n\nDeployment to production completed successfully."
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Commit:*\n<${{ github.event.repository.html_url }}/commit/${{ github.sha }}|${{ github.sha }}>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Author:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View in Production"
+                      },
+                      "url": "https://${{ secrets.DOMAIN_NAME }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Notify Failure
+        if: ${{ failure() }}
+        uses: slackapi/slack-github-action@v1.23.0
+        with:
+          payload: |
+            {
+              "text": "❌ Production Chatbot deployment failed!",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "❌ *Production Chatbot deployment failed!*\n\nThere was an error during the deployment process."
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Commit:*\n<${{ github.event.repository.html_url }}/commit/${{ github.sha }}|${{ github.sha }}>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Author:*\n${{ github.actor }}"
+                    }
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "View GitHub Workflow"
+                      },
+                      "url": "${{ github.event.repository.html_url }}/actions/runs/${{ github.run_id }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

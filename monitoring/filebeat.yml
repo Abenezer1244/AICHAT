@@ -1,0 +1,46 @@
+# monitoring/filebeat.yml - Filebeat configuration for Docker logs
+
+filebeat.config:
+  modules:
+    path: ${path.config}/modules.d/*.yml
+    reload.enabled: false
+
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: true
+      templates:
+        - condition:
+            contains:
+              docker.container.name: chatbot_
+          config:
+            - type: container
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              json.message_key: log
+              json.keys_under_root: true
+              processors:
+                - add_docker_metadata: ~
+
+processors:
+  - add_host_metadata: ~
+  - add_cloud_metadata: ~
+  - add_docker_metadata: ~
+  - add_kubernetes_metadata: ~
+
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  indices:
+    - index: "filebeat-%{[agent.version]}-%{+yyyy.MM.dd}"
+
+# Enable monitoring
+monitoring:
+  enabled: true
+  elasticsearch:
+    hosts: ["elasticsearch:9200"]
+
+# Setup template and dashboards
+setup.template.enabled: true
+setup.dashboards.enabled: true
+setup.kibana:
+  host: "kibana:5601"
