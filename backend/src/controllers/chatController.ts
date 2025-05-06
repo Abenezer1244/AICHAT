@@ -2,6 +2,7 @@
 
 import { Request, Response, NextFunction } from 'express';
 import Conversation from '../models/Conversation';
+import { cacheGet, cacheSet } from '../services/redisService';
 // src/services/aiService.ts
 
 export interface Message {
@@ -134,6 +135,9 @@ export const sendMessage = async (
 // @desc    Get user conversations
 // @route   GET /api/chat/conversations
 // @access  Private
+// src/controllers/chatController.ts
+
+// Optimize conversation fetching with projection and lean queries
 export const getConversations = async (
   req: Request,
   res: Response,
@@ -146,35 +150,24 @@ export const getConversations = async (
 
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
-    const skip = (page - 1) * limit;
 
-    const conversations = await Conversation.find({ userId: req.user.id })
-      .select('_id title createdAt')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const total = await Conversation.countDocuments({ userId: req.user.id });
+    // Use lean for better performance when you don't need full document methods
+    const result = await Conversation.getUserConversations(req.user.id, page, limit);
 
     res.status(200).json({
       success: true,
-      count: conversations.length,
-      total,
-      pagination: {
-        page,
-        pages: Math.ceil(total / limit),
-      },
-      data: conversations,
+      count: result.conversations.length,
+      pagination: result.pagination,
+      data: result.conversations,
     });
   } catch (error) {
     next(error);
   }
 };
 
-// @desc    Get single conversation
-// @route   GET /api/chat/conversations/:id
-// @access  Private
-export const getConversation = async (
+// Optimize single conversation fetch with projection
+// Get user conversations with caching
+export const getConversations = async (
   req: Request,
   res: Response,
   next: NextFunction
@@ -184,24 +177,36 @@ export const getConversation = async (
       throw new ApiError('Not authorized', 401);
     }
 
-    const conversation = await Conversation.findOne({
-      _id: req.params.id,
-      userId: req.user.id,
-    });
-
-    if (!conversation) {
-      throw new ApiError('Conversation not found', 404);
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 10;
+    
+    // Create cache key
+    const cacheKey = `conversations:${req.user.id}:${page}:${limit}`;
+    
+    // Try to get from cache first
+    const cachedData = await cacheGet(cacheKey);
+    if (cachedData) {
+      return res.status(200).json(cachedData);
     }
 
-    res.status(200).json({
+    // If not in cache, fetch from database
+    const result = await Conversation.getUserConversations(req.user.id, page, limit);
+
+    const responseData = {
       success: true,
-      data: conversation,
-    });
+      count: result.conversations.length,
+      pagination: result.pagination,
+      data: result.conversations,
+    };
+    
+    // Cache the response for 5 minutes
+    await cacheSet(cacheKey, responseData, 300);
+
+    res.status(200).json(responseData);
   } catch (error) {
     next(error);
   }
 };
-
 // @desc    Delete conversation
 // @route   DELETE /api/chat/conversations/:id
 // @access  Private

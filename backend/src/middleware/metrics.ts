@@ -58,6 +58,66 @@ const authAttempts = new promClient.Counter({
   registers: [register],
 });
 
+// src/middleware/metrics.ts
+
+// Add business metrics
+const userMetrics = new promClient.Gauge({
+  name: 'chatbot_active_users_total',
+  help: 'Total number of active users',
+  registers: [register],
+});
+
+const conversationMetrics = new promClient.Gauge({
+  name: 'chatbot_conversations_total',
+  help: 'Total number of conversations',
+  registers: [register],
+});
+
+const messageMetrics = new promClient.Gauge({
+  name: 'chatbot_messages_total',
+  help: 'Total number of messages',
+  registers: [register],
+});
+
+// Add function to update business metrics
+export const updateBusinessMetrics = async () => {
+  try {
+    const mongoose = require('mongoose');
+    const User = mongoose.model('User');
+    const Conversation = mongoose.model('Conversation');
+    
+    // Update user metrics
+    const activeUsers = await User.countDocuments({
+      'usage.lastActive': { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+    });
+    userMetrics.set(activeUsers);
+    
+    // Update conversation metrics
+    const totalConversations = await Conversation.countDocuments();
+    conversationMetrics.set(totalConversations);
+    
+    // Update message metrics - count all messages across all conversations
+    const result = await Conversation.aggregate([
+      { $unwind: '$messages' },
+      { $count: 'total' }
+    ]);
+    
+    if (result.length > 0) {
+      messageMetrics.set(result[0].total);
+    }
+  } catch (error) {
+    logger.error('Error updating business metrics:', error);
+  }
+};
+
+// Schedule metrics update
+setInterval(updateBusinessMetrics, 5 * 60 * 1000); // Every 5 minutes
+
+// Add metrics for AI response time
+export const trackAIResponseTime = (durationSec: number) => {
+  chatResponseTimeSeconds.observe(durationSec);
+};
+
 // Initialize metrics middleware
 export const initMetrics = () => {
   logger.info('Initializing Prometheus metrics');

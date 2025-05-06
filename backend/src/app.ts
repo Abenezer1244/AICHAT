@@ -1,128 +1,131 @@
-// src/app.ts - Updated main Express application with metrics integration
+// src/app.ts
 
-import express, { Application, Request, Response, NextFunction } from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import express from 'express';
+import config from './config';
+import { logger, httpLogger } from './utils/logger';
 import { errorHandler } from './middleware/errorHandler';
-import { logger } from './utils/logger';
-import chatRoutes from './routes/chatRoutes';
-import authRoutes from './routes/authRoutes';
+import { csrfProtection, handleCSRFError } from './middleware/csrfProtection';
+import { setupSwagger } from './utils/swagger';
+import helmet from 'helmet';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import RedisStore from 'rate-limit-redis';
+import { redisClient } from './services/redisService';
 import { initMetrics, metricsEndpoint, requestMetrics } from './middleware/metrics';
 
-// Initialize express application
-const app: Application = express();
+// Routes
+import authRoutes from './routes/authRoutes';
+import chatRoutes from './routes/chatRoutes';
+
+const app = express();
 
 // Initialize metrics
-initMetrics();
+if (config.monitoring.metricsEnabled) {
+  initMetrics();
+}
 
 // Security middlewares
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com'],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
+      imgSrc: ["'self'", 'data:'],
+      connectSrc: ["'self'", config.appUrl, 'https://api.openai.com', 'https://api.anthropic.com'],
+      fontSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
     },
   },
-}));  // Sets various HTTP headers for security
-app.use(cors({
-  origin: process.env.NODE_ENV === 'production' 
-    ? process.env.FRONTEND_URL 
-    : '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-}));    // Enable CORS for all routes
-app.use(express.json({ limit: '1mb' })); // Parse JSON request bodies with size limit
+  xssFilter: true,
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
+}));
 
-// Request metrics middleware - Add before route handlers
-app.use(requestMetrics);
+// CORS
+app.use(cors(config.cors));
 
-// Rate limiting for API protection - Redis store for distributed rate limiting
-const redisClient = require('redis').createClient(process.env.REDIS_URL || 'redis://localhost:6379');
-const RedisStore = require('rate-limit-redis');
+// Body parsing
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
+// Request logging
+app.use(httpLogger);
+
+// Request metrics
+if (config.monitoring.metricsEnabled) {
+  app.use(requestMetrics);
+}
+
+// Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
-  legacyHeaders: false, // Disable the `X-RateLimit-*` headers
+  windowMs: config.rateLimit.window,
+  max: config.rateLimit.max,
+  standardHeaders: true,
+  legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.',
-  // Use Redis store for distributed rate limiting when in production
-  ...(process.env.NODE_ENV === 'production' && {
-    store: new RedisStore({
-      client: redisClient,
-      prefix: 'rate-limit:',
-      // 1 second precision for expiry time in Redis
-      timeWindow: 1000,
-    }),
+  store: new RedisStore({
+    client: redisClient,
+    prefix: 'rate-limit:',
+    timeWindow: 1000,
   }),
 });
 
 // Apply rate limiting to API routes
 app.use('/api', limiter);
 
-// More aggressive rate limiting for auth endpoints
-const authLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 10, // limit each IP to 10 login attempts per hour
-  message: 'Too many login attempts, please try again later',
-  standardHeaders: true,
-  legacyHeaders: false,
-  // Use Redis store for distributed rate limiting when in production
-  ...(process.env.NODE_ENV === 'production' && {
-    store: new RedisStore({
-      client: redisClient,
-      prefix: 'auth-rate-limit:',
-      timeWindow: 1000,
-    }),
-  }),
-});
+// CSRF protection for all mutating endpoints
+if (config.nodeEnv === 'production') {
+  app.use('/api', csrfProtection);
+  app.use(handleCSRFError);
+}
 
-// Request logging
-app.use((req: Request, _res: Response, next: NextFunction) => {
-  // Skip logging health check endpoints to reduce noise
-  if (!req.path.includes('/health') && !req.path.includes('/metrics')) {
-    logger.info(`${req.method} ${req.path} ${req.ip}`);
-  }
-  next();
-});
-
-// Routes with specific rate limiting
-app.use('/api/auth/login', authLimiter);
-app.use('/api/auth/register', authLimiter);
+// Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/chat', chatRoutes);
 
-// Metrics endpoint - keep it separate from API routes to avoid rate limiting
-app.get('/metrics', metricsEndpoint);
+// Metrics endpoint
+if (config.monitoring.metricsEnabled) {
+  app.get(config.monitoring.metricsPath, metricsEndpoint);
+}
 
-// Detailed health check endpoint for monitoring
-app.get('/health', async (_req: Request, res: Response) => {
+// Health check
+app.get('/health', async (req, res) => {
   try {
     // Check database connection
-    const mongoose = require('mongoose');
-    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    const dbStatus = mongoose.connection.readyState;
+    const dbStatusMap = {
+      0: 'disconnected',
+      1: 'connected',
+      2: 'connecting',
+      3: 'disconnecting',
+    };
     
     // Check redis connection
-    const redisStatus = await new Promise((resolve) => {
-      redisClient.ping((err: Error) => {
-        resolve(err ? 'error' : 'connected');
-      });
-    });
+    let redisStatus;
+    try {
+      await redisClient.ping();
+      redisStatus = 'connected';
+    } catch (err) {
+      redisStatus = 'error';
+    }
     
     // Get memory usage
     const memoryUsage = process.memoryUsage();
     
     res.status(200).json({
-      status: 'ok',
+      status: dbStatus === 1 ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       version: process.env.npm_package_version || '1.0.0',
+      environment: config.nodeEnv,
       services: {
-        database: dbStatus,
+        database: dbStatusMap[dbStatus] || 'unknown',
         redis: redisStatus,
       },
       memory: {
@@ -132,18 +135,22 @@ app.get('/health', async (_req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    // Simple response if detailed checks fail
-    res.status(200).json({ status: 'ok' });
+    res.status(503).json({ status: 'error', error: 'Health check failed' });
   }
 });
 
-// Simple health check for load balancers
-app.get('/ping', (_req: Request, res: Response) => {
+// Simple ping endpoint for load balancers
+app.get('/ping', (req, res) => {
   res.status(200).send('pong');
 });
 
+// Swagger docs
+if (config.nodeEnv !== 'production') {
+  setupSwagger(app);
+}
+
 // 404 handler
-app.use((_req: Request, res: Response) => {
+app.use((req, res) => {
   res.status(404).json({
     success: false,
     error: 'Not Found',

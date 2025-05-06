@@ -1,13 +1,17 @@
-// File: frontend/src/components/auth/LoginForm.tsx
+// src/components/auth/LoginForm.tsx
 import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 
-const LoginForm = () => {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const { authState, login, clearError } = useAuth();
+interface LoginFormProps {
+  // Add any props if needed
+}
 
-  const handleSubmit = async (e) => {
+const LoginForm: React.FC<LoginFormProps> = () => {
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const { login, loading, error, clearError } = useAuth();
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     await login(email, password);
   };
@@ -16,9 +20,9 @@ const LoginForm = () => {
     <div className="max-w-md mx-auto mt-8 p-6 bg-white rounded-lg shadow-lg">
       <h2 className="text-2xl font-bold mb-6 text-center">Login</h2>
       
-      {authState.error && (
+      {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          <p>{authState.error}</p>
+          <p>{error}</p>
         </div>
       )}
       
@@ -57,9 +61,9 @@ const LoginForm = () => {
           <button
             className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
             type="submit"
-            disabled={authState.loading}
+            disabled={loading}
           >
-            {authState.loading ? 'Logging in...' : 'Login'}
+            {loading ? 'Logging in...' : 'Login'}
           </button>
         </div>
       </form>

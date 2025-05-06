@@ -40,6 +40,56 @@ jobs:
           cd backend
           npm ci
 
+    # .github/workflows/ci-cd.yml - Enhanced CI/CD pipeline
+
+# Add caching for npm dependencies
+      - name: Cache Node Modules
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+          ${{ runner.os }}-node-
+
+# Add code quality checks
+      - name: Code Quality Checks
+        run: |
+          cd backend
+          npm run lint
+          npm run format:check
+
+# Add type checking
+      - name: Type Check
+        run: |
+          cd backend
+          npm run type-check
+
+# Add test coverage reporting
+      - name: Report Test Coverage
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          directory: ./backend/coverage/
+          flags: backend
+          fail_ci_if_error: true
+
+# Add performance tests
+      - name: Performance Tests
+        run: |
+          cd backend
+          npm run test:performance
+
+# Enhance security scan
+      - name: Security Audit
+        run: |
+          cd backend
+          npm audit --production
+    
+# Add rollback capability
+      - name: Deploy with rollback capability
+        run: |
+    # Deploy with ability to roll back if health check fails
+        ssh ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} "cd /opt/production-chatbot && ./deploy.sh --with-rollback"
       - name: Lint backend
         run: |
           cd backend

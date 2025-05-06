@@ -1,23 +1,26 @@
-import React, { useState, useContext } from 'react';
+// src/components/auth/RegisterForm.tsx
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import AuthContext from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/AuthContext';
 import PasswordInput from '../common/PasswordInput';
 
-const RegisterForm = () => {
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+interface RegisterFormProps {
+  // Add any props if needed
+}
+
+const RegisterForm: React.FC<RegisterFormProps> = () => {
+  const [name, setName] = useState<string>('');
+  const [email, setEmail] = useState<string>('');
+  const [password, setPassword] = useState<string>('');
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
+  const [error, setError] = useState<string>('');
   
-  const { login } = useContext(AuthContext);
+  const { register, loading } = useAuth();
   const navigate = useNavigate();
   
-  const handleSubmit = async (e) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    setIsLoading(true);
     
     try {
       // Validate inputs
@@ -33,30 +36,13 @@ const RegisterForm = () => {
         throw new Error('Password must be at least 6 characters');
       }
       
-      // Call register API
-      const response = await fetch('/api/auth/register', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ name, email, password }),
-      });
+      // Call register function from auth context
+      await register(name, email, password);
       
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || 'Registration failed');
-      }
-      
-      // Log in the user with the returned token
-      login(data.token, data.user);
-      
-      // Redirect to dashboard
+      // Navigate to dashboard on success
       navigate('/dashboard');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setIsLoading(false);
+    } catch (err: any) {
+      setError(err.message || 'Registration failed');
     }
   };
   
@@ -112,10 +98,10 @@ const RegisterForm = () => {
           </div>
           <button
             type="submit"
-            disabled={isLoading}
+            disabled={loading}
             className="register-button"
           >
-            {isLoading ? 'Creating Account...' : 'Create Account'}
+            {loading ? 'Creating Account...' : 'Create Account'}
           </button>
         </form>
         <div className="mt-4 text-center">

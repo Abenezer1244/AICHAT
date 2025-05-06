@@ -1,10 +1,15 @@
+// src/components/layout/Navbar.tsx
 import React, { useContext, useState } from 'react';
 import { Link } from 'react-router-dom';
-import AuthContext from '../../contexts/AuthContext';
+import { useAuth } from '../../contexts/AuthContext';
 
-const Navbar = () => {
-  const { user, logout } = useContext(AuthContext);
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
+interface NavbarProps {
+  // Add any props if needed
+}
+
+const Navbar: React.FC<NavbarProps> = () => {
+  const { user, logout } = useAuth();
+  const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   
   const toggleMenu = () => {
     setIsMenuOpen(!isMenuOpen);
